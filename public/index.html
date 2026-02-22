@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SYNAPSE — Jeu Collaboratif</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;400;700;900&display=swap');
+
+:root {
+  --bg:       #080c14;
+  --surface:  #0d1520;
+  --panel:    #111c2e;
+  --border:   #1a2d4a;
+  --accent:   #00d4ff;
+  --success:  #00ff9d;
+  --danger:   #ff3d5a;
+  --warning:  #ffcc00;
+  --text:     #cce4ff;
+  --dim:      #4a6fa5;
+  --glow:     0 0 20px rgba(0,212,255,0.3);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Exo 2', sans-serif;
+  min-height: 100vh;
+  overflow: hidden;
+  cursor: none;
+  user-select: none;
+}
+
+/* Grid background */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background-image:
+    linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Corner decorations */
+.corner {
+  position: fixed;
+  width: 60px; height: 60px;
+  pointer-events: none;
+  z-index: 100;
+}
+.corner::before, .corner::after {
+  content: '';
+  position: absolute;
+  background: var(--accent);
+}
+.corner::before { width: 100%; height: 2px; }
+.corner::after  { width: 2px; height: 100%; }
+.corner.tl { top: 16px; left: 16px; }
+.corner.tr { top: 16px; right: 16px; transform: scaleX(-1); }
+.corner.bl { bottom: 16px; left: 16px; transform: scaleY(-1); }
+.corner.br { bottom: 16px; right: 16px; transform: scale(-1); }
+
+/* Layout */
+#app {
+  position: relative;
+  width: 100vw; height: 100vh;
+  display: grid;
+  grid-template-columns: 260px 1fr 260px;
+  grid-template-rows: 60px 1fr 80px;
+  gap: 0;
+  z-index: 1;
+}
+
+/* Header */
+header {
+  grid-column: 1/-1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  gap: 20px;
+  background: rgba(13,21,32,0.8);
+  backdrop-filter: blur(10px);
+}
+
+.logo {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 22px;
+  letter-spacing: 8px;
+  color: var(--accent);
+  text-shadow: var(--glow);
+}
+
+.header-status {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  color: var(--dim);
+  letter-spacing: 2px;
+}
+
+/* Side panels */
+.side-panel {
+  background: rgba(13,21,32,0.7);
+  border-right: 1px solid var(--border);
+  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  backdrop-filter: blur(6px);
+  overflow: hidden;
+}
+.side-panel.right {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+
+.panel-title {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 3px;
+  color: var(--dim);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Player cards */
+.player-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: border-color 0.3s, box-shadow 0.3s;
+  position: relative;
+  overflow: hidden;
+}
+.player-card::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--player-color, var(--dim));
+}
+.player-card.is-me { border-color: var(--player-color, var(--accent)); }
+.player-card.is-ready { border-color: var(--success); box-shadow: 0 0 10px rgba(0,255,157,0.15); }
+
+.player-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--player-color);
+  box-shadow: 0 0 8px var(--player-color);
+  flex-shrink: 0;
+}
+
+.player-info { flex: 1; min-width: 0; }
+.player-name { font-weight: 700; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.player-status { font-family: 'Share Tech Mono', monospace; font-size: 10px; color: var(--dim); }
+.player-card.is-ready .player-status { color: var(--success); }
+
+.ready-badge {
+  font-size: 9px;
+  padding: 2px 6px;
+  background: rgba(0,255,157,0.15);
+  border: 1px solid var(--success);
+  border-radius: 2px;
+  color: var(--success);
+  font-family: 'Share Tech Mono', monospace;
+  letter-spacing: 1px;
+}
+
+/* Main arena */
+#arena {
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(ellipse at center, rgba(0,50,80,0.2) 0%, transparent 70%);
+}
+
+/* SVG puzzle canvas */
+#puzzle-svg {
+  width: 100%; height: 100%;
+  position: absolute; inset: 0;
+}
+
+/* Overlay states */
+.overlay {
+  position: absolute; inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  z-index: 50;
+  transition: opacity 0.5s;
+}
+.overlay.hidden { opacity: 0; pointer-events: none; }
+
+.overlay-title {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: clamp(24px, 4vw, 48px);
+  letter-spacing: 6px;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.countdown-number {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: clamp(80px, 15vw, 160px);
+  color: var(--accent);
+  text-shadow: var(--glow), 0 0 60px rgba(0,212,255,0.5);
+  animation: pulse 0.8s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.7; transform: scale(0.95); } }
+
+#btn-ready {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 14px;
+  letter-spacing: 4px;
+  padding: 14px 40px;
+  background: transparent;
+  border: 2px solid var(--accent);
+  color: var(--accent);
+  cursor: none;
+  text-transform: uppercase;
+  position: relative;
+  overflow: hidden;
+  transition: color 0.3s, background 0.3s, box-shadow 0.3s;
+}
+#btn-ready::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.3s;
+  z-index: -1;
+}
+#btn-ready:hover::before { transform: scaleX(1); }
+#btn-ready:hover { color: var(--bg); box-shadow: var(--glow); }
+#btn-ready.active {
+  background: var(--accent);
+  color: var(--bg);
+  box-shadow: var(--glow);
+}
+
+.waiting-info {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 12px;
+  color: var(--dim);
+  letter-spacing: 2px;
+  text-align: center;
+}
+
+/* Success/fail overlays */
+#overlay-success .overlay-title { color: var(--success); text-shadow: 0 0 30px var(--success); }
+#overlay-fail .overlay-title { color: var(--danger); text-shadow: 0 0 30px var(--danger); }
+
+/* Bottom bar */
+footer {
+  grid-column: 1/-1;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  background: rgba(13,21,32,0.8);
+  backdrop-filter: blur(10px);
+  gap: 20px;
+}
+
+.hint-bar {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  color: var(--dim);
+  letter-spacing: 1px;
+  flex: 1;
+}
+
+.hint-bar span { color: var(--accent); }
+
+.sync-meter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  color: var(--dim);
+  letter-spacing: 2px;
+}
+
+.meter-bar {
+  width: 120px; height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--danger), var(--warning), var(--success));
+  width: 0%;
+  transition: width 0.2s;
+}
+
+/* Remote Cursors */
+.remote-cursor {
+  position: fixed;
+  pointer-events: none;
+  z-index: 1000;
+  transition: left 0.05s, top 0.05s;
+  transform: translate(-4px, -4px);
+}
+
+.remote-cursor svg { filter: drop-shadow(0 0 4px var(--cursor-color)); }
+
+.remote-cursor-label {
+  position: absolute;
+  top: 20px; left: 12px;
+  background: var(--cursor-color);
+  color: var(--bg);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 2px;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+/* My cursor */
+#my-cursor {
+  position: fixed;
+  pointer-events: none;
+  z-index: 999;
+  transform: translate(-4px, -4px);
+}
+
+/* Nodes in SVG */
+.node-group { cursor: none; }
+.node-bg {
+  transition: r 0.2s;
+}
+.node-group:hover .node-bg { r: 22px; }
+
+/* Log panel */
+.log-entries {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.log-entries::-webkit-scrollbar { width: 3px; }
+.log-entries::-webkit-scrollbar-track { background: transparent; }
+.log-entries::-webkit-scrollbar-thumb { background: var(--border); }
+
+.log-entry {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  color: var(--dim);
+  padding: 4px 6px;
+  border-left: 2px solid transparent;
+  line-height: 1.4;
+}
+.log-entry.event { border-color: var(--accent); color: var(--text); }
+.log-entry.success { border-color: var(--success); color: var(--success); }
+.log-entry.danger { border-color: var(--danger); color: var(--danger); }
+
+/* Instructions panel */
+.instruction-block {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--dim);
+}
+.instruction-block strong { color: var(--accent); display: block; margin-bottom: 4px; }
+
+/* Scan line effect */
+@keyframes scan {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+.scanline {
+  position: fixed;
+  left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(transparent, rgba(0,212,255,0.05), transparent);
+  pointer-events: none;
+  z-index: 9999;
+  animation: scan 8s linear infinite;
+}
+</style>
+</head>
+<body>
+<div class="scanline"></div>
+<div class="corner tl"></div>
+<div class="corner tr"></div>
+<div class="corner bl"></div>
+<div class="corner br"></div>
+
+<div id="app">
+  <!-- Header -->
+  <header>
+    <div class="logo">SYNAPSE</div>
+    <div class="header-status" id="header-status">CONNEXION...</div>
+  </header>
+
+  <!-- Left panel: Players -->
+  <aside class="side-panel left">
+    <div class="panel-title">// OPÉRATEURS CONNECTÉS</div>
+    <div id="player-list"></div>
+  </aside>
+
+  <!-- Arena -->
+  <main id="arena">
+    <svg id="puzzle-svg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <filter id="glow-filter">
+          <feGaussianBlur stdDeviation="1.5" result="coloredBlur"/>
+          <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <filter id="glow-strong">
+          <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+          <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <radialGradient id="arena-grad">
+          <stop offset="0%" stop-color="rgba(0,212,255,0.05)"/>
+          <stop offset="100%" stop-color="transparent"/>
+        </radialGradient>
+      </defs>
+      <rect width="100" height="100" fill="url(#arena-grad)"/>
+      <g id="connections-layer"></g>
+      <g id="nodes-layer"></g>
+      <text x="50" y="8" text-anchor="middle" font-family="'Share Tech Mono'" font-size="3" fill="rgba(0,212,255,0.4)" letter-spacing="2">RÉSEAU NEURONAL</text>
+    </svg>
+
+    <!-- Overlays -->
+    <div id="overlay-waiting" class="overlay">
+      <div class="overlay-title" style="color:var(--accent)">SYNAPSE</div>
+      <div class="waiting-info" id="waiting-info">EN ATTENTE DE JOUEURS...</div>
+      <button id="btn-ready" onclick="toggleReady()">PRÊT</button>
+      <div class="waiting-info" style="margin-top:8px;font-size:10px;">
+        MINIMUM 2 JOUEURS · TOUS DOIVENT ÊTRE PRÊTS
+      </div>
+    </div>
+
+    <div id="overlay-countdown" class="overlay hidden">
+      <div class="overlay-title" style="color:var(--dim)">INITIALISATION</div>
+      <div class="countdown-number" id="countdown-num">3</div>
+    </div>
+
+    <div id="overlay-success" class="overlay hidden">
+      <div class="overlay-title">SYNCHRONISATION<br>PARFAITE</div>
+      <div class="waiting-info" style="color:var(--success)">TOUS LES NEURONES ACTIVÉS</div>
+    </div>
+
+    <div id="overlay-fail" class="overlay hidden">
+      <div class="overlay-title">DÉSYNCHRONISÉ</div>
+      <div class="waiting-info" style="color:var(--danger)">LA CONNEXION A ÉTÉ PERDUE</div>
+    </div>
+  </main>
+
+  <!-- Right panel: Log + Instructions -->
+  <aside class="side-panel right">
+    <div class="panel-title">// JOURNAL SYSTÈME</div>
+    <div class="log-entries" id="log"></div>
+    <div class="instruction-block">
+      <strong>PROTOCOLE</strong>
+      1. ACTIVEZ votre nœud privé<br>
+      2. COORDONNEZ avec les autres<br>
+      3. ACTIVEZ les nœuds partagés<br>
+      <span style="color:var(--warning)">SIMULTANÉMENT !</span><br>
+      La fenêtre de sync : 1.5s
+    </div>
+  </aside>
+
+  <!-- Footer -->
+  <footer>
+    <div class="hint-bar" id="hint-text">
+      <span>CTRL+CLIC</span> pour activer · relâcher pour désactiver
+    </div>
+    <div class="sync-meter">
+      <span>SYNC</span>
+      <div class="meter-bar"><div class="meter-fill" id="sync-fill"></div></div>
+      <span id="sync-pct">—</span>
+    </div>
+    <div class="hint-bar" style="text-align:right; font-size:10px;" id="footer-right">
+      JOUEURS EN LIGNE : <span id="player-count" style="color:var(--accent)">0</span>
+    </div>
+  </footer>
+</div>
+
+<!-- My cursor -->
+<div id="my-cursor">
+  <svg width="20" height="20" viewBox="0 0 20 20">
+    <polygon points="2,2 2,16 6,12 9,18 11,17 8,11 14,11" fill="white" stroke="var(--accent)" stroke-width="1"/>
+  </svg>
+</div>
+
+<script>
+// ─── Socket connection ────────────────────────────────────────────────────────
+const socket = io();
+
+let myId = null;
+let myColor = '#00d4ff';
+let myName = 'Joueur';
+let currentGame = null;
+let remoteCursors = {};
+let isReady = false;
+let mouseX = 0, mouseY = 0;
+
+// Throttle cursor emit
+let lastEmit = 0;
+document.addEventListener('mousemove', (e) => {
+  mouseX = e.clientX;
+  mouseY = e.clientY;
+  document.getElementById('my-cursor').style.left = mouseX + 'px';
+  document.getElementById('my-cursor').style.top  = mouseY + 'px';
+
+  const now = Date.now();
+  if (now - lastEmit > 40) {
+    lastEmit = now;
+    const arena = document.getElementById('arena').getBoundingClientRect();
+    const x = ((mouseX - arena.left) / arena.width) * 100;
+    const y = ((mouseY - arena.top) / arena.height) * 100;
+    socket.emit('cursor:move', { x, y });
+  }
+});
+
+// ─── Socket events ────────────────────────────────────────────────────────────
+socket.on('player:identity', (data) => {
+  myId    = data.id;
+  myColor = data.color;
+  myName  = data.name;
+  document.getElementById('my-cursor').style.color = myColor;
+  log(`Identifié comme ${myName}`, 'event');
+  document.getElementById('header-status').textContent = `OPÉRATEUR: ${myName}`;
+});
+
+socket.on('cursor:update', ({ id, name, color, x, y }) => {
+  if (id === myId) return;
+  let el = remoteCursors[id];
+  if (!el) {
+    el = createRemoteCursor(id, name, color);
+    remoteCursors[id] = el;
+  }
+  const arena = document.getElementById('arena').getBoundingClientRect();
+  el.style.left = (arena.left + (x / 100) * arena.width)  + 'px';
+  el.style.top  = (arena.top  + (y / 100) * arena.height) + 'px';
+});
+
+socket.on('cursor:remove', ({ id }) => {
+  if (remoteCursors[id]) {
+    remoteCursors[id].remove();
+    delete remoteCursors[id];
+  }
+});
+
+socket.on('game:state', ({ players, game }) => {
+  currentGame = game;
+  renderPlayers(players);
+  renderOverlay(game);
+  if (game.phase === 'active' && game.puzzle) {
+    renderPuzzle(game.puzzle, players);
+  }
+  document.getElementById('player-count').textContent = players.length;
+});
+
+socket.on('node:updated', ({ nodeId, activated, activatedBy }) => {
+  updateNodeVisual(nodeId, activated);
+  if (activatedBy) log(`${activatedBy} → nœud ${nodeId.replace('_', ' ')}`, 'event');
+  updateSyncMeter();
+});
+
+socket.on('game:success', ({ message }) => {
+  log('⬛ ' + message, 'success');
+  showOverlay('success');
+  fireCelebration();
+});
+
+// ─── UI rendering ─────────────────────────────────────────────────────────────
+function renderPlayers(players) {
+  const el = document.getElementById('player-list');
+  el.innerHTML = '';
+  players.forEach(p => {
+    const card = document.createElement('div');
+    card.className = `player-card${p.id === myId ? ' is-me' : ''}${p.ready ? ' is-ready' : ''}`;
+    card.style.setProperty('--player-color', p.color);
+    card.innerHTML = `
+      <div class="player-dot" style="background:${p.color};box-shadow:0 0 8px ${p.color}"></div>
+      <div class="player-info">
+        <div class="player-name">${p.name}${p.id === myId ? ' (vous)' : ''}</div>
+        <div class="player-status">${p.ready ? '● PRÊT' : '○ EN ATTENTE'}</div>
+      </div>
+      ${p.ready ? '<div class="ready-badge">PRÊT</div>' : ''}
+    `;
+    el.appendChild(card);
+  });
+}
+
+function renderOverlay(game) {
+  hideAllOverlays();
+  if (game.phase === 'waiting') {
+    showOverlay('waiting');
+    const btn = document.getElementById('btn-ready');
+    btn.classList.toggle('active', isReady);
+  } else if (game.phase === 'countdown') {
+    showOverlay('countdown');
+    document.getElementById('countdown-num').textContent = game.countdown;
+  } else if (game.phase === 'active') {
+    // No overlay during game
+  } else if (game.phase === 'success') {
+    showOverlay('success');
+  } else if (game.phase === 'fail') {
+    showOverlay('fail');
+  }
+}
+
+function hideAllOverlays() {
+  ['waiting','countdown','success','fail'].forEach(id => {
+    document.getElementById(`overlay-${id}`).classList.add('hidden');
+  });
+}
+
+function showOverlay(name) {
+  document.getElementById(`overlay-${name}`).classList.remove('hidden');
+}
+
+// ─── Puzzle rendering ─────────────────────────────────────────────────────────
+let myNodes = []; // nodes owned by me
+
+function renderPuzzle(puzzle, players) {
+  myNodes = [];
+  const cLayer = document.getElementById('connections-layer');
+  const nLayer = document.getElementById('nodes-layer');
+  cLayer.innerHTML = '';
+  nLayer.innerHTML = '';
+
+  const playerMap = {};
+  players.forEach(p => playerMap[p.id] = p);
+
+  // Draw connections
+  puzzle.connections.forEach(conn => {
+    const fromNode = puzzle.nodes.find(n => n.id === conn.from);
+    const toNode   = puzzle.nodes.find(n => n.id === conn.to);
+    if (!fromNode || !toNode) return;
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', fromNode.x); line.setAttribute('y1', fromNode.y);
+    line.setAttribute('x2', toNode.x);   line.setAttribute('y2', toNode.y);
+    line.setAttribute('stroke', 'rgba(0,212,255,0.15)');
+    line.setAttribute('stroke-width', '0.5');
+    line.setAttribute('stroke-dasharray', '2,3');
+    line.id = `conn-${conn.from}-${conn.to}`;
+    cLayer.appendChild(line);
+  });
+
+  // Draw nodes
+  puzzle.nodes.forEach(node => {
+    const isOwned = node.owner === myId;
+    const isShared = node.type === 'shared';
+    const canInteract = isOwned || isShared;
+    const owner = node.owner ? playerMap[node.owner] : null;
+    const color = isShared ? '#00d4ff' : (owner ? owner.color : '#4a6fa5');
+
+    if (isOwned || isShared) myNodes.push(node.id);
+
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.classList.add('node-group');
+    g.id = `node-${node.id}`;
+    g.setAttribute('data-nodeid', node.id);
+
+    // Outer pulse ring
+    const ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    ring.setAttribute('cx', node.x); ring.setAttribute('cy', node.y);
+    ring.setAttribute('r', '22');
+    ring.setAttribute('fill', 'none');
+    ring.setAttribute('stroke', color);
+    ring.setAttribute('stroke-width', '0.3');
+    ring.setAttribute('opacity', '0.2');
+    ring.classList.add('node-ring');
+
+    // Background circle
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    bg.classList.add('node-bg');
+    bg.setAttribute('cx', node.x); bg.setAttribute('cy', node.y);
+    bg.setAttribute('r', '18');
+    bg.setAttribute('fill', node.activated ? `${color}22` : 'rgba(8,12,20,0.8)');
+    bg.setAttribute('stroke', node.activated ? color : 'rgba(0,212,255,0.2)');
+    bg.setAttribute('stroke-width', node.activated ? '1' : '0.5');
+
+    // Inner node
+    const inner = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    inner.setAttribute('cx', node.x); inner.setAttribute('cy', node.y);
+    inner.setAttribute('r', node.activated ? '8' : '5');
+    inner.setAttribute('fill', color);
+    inner.setAttribute('opacity', node.activated ? '1' : '0.5');
+    inner.setAttribute('filter', node.activated ? 'url(#glow-strong)' : 'url(#glow-filter)');
+
+    // Label
+    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    label.setAttribute('x', node.x);
+    label.setAttribute('y', node.y + 16);
+    label.setAttribute('text-anchor', 'middle');
+    label.setAttribute('font-family', 'Share Tech Mono');
+    label.setAttribute('font-size', '2.5');
+    label.setAttribute('fill', color);
+    label.setAttribute('opacity', '0.7');
+    label.textContent = isShared ? '⬡ SYNC' : (owner ? owner.name : '?');
+
+    g.appendChild(ring);
+    g.appendChild(bg);
+    g.appendChild(inner);
+    g.appendChild(label);
+
+    if (canInteract) {
+      g.style.cursor = 'none';
+
+      const interact = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      interact.setAttribute('cx', node.x); interact.setAttribute('cy', node.y);
+      interact.setAttribute('r', '22');
+      interact.setAttribute('fill', 'transparent');
+      g.appendChild(interact);
+
+      g.addEventListener('mousedown', (e) => {
+        if (e.button === 0) socket.emit('node:activate', { nodeId: node.id });
+      });
+      g.addEventListener('mouseup', (e) => {
+        if (e.button === 0) socket.emit('node:deactivate', { nodeId: node.id });
+      });
+      g.addEventListener('mouseleave', () => {
+        socket.emit('node:deactivate', { nodeId: node.id });
+      });
+    }
+
+    nLayer.appendChild(g);
+  });
+
+  document.getElementById('hint-text').innerHTML =
+    `<span>CLIC</span> maintenez enfoncé pour activer · coordination requise sur les nœuds <span>SYNC</span>`;
+}
+
+function updateNodeVisual(nodeId, activated) {
+  const g = document.getElementById(`node-${nodeId}`);
+  if (!g) return;
+  const circles = g.querySelectorAll('circle');
+  if (circles.length < 3) return;
+  const bg    = circles[1];
+  const inner = circles[2];
+
+  // Determine color (shared vs private)
+  const isShared = nodeId.startsWith('shared');
+  const color = isShared ? '#00d4ff' : myColor;
+
+  bg.setAttribute('fill', activated ? `${color}22` : 'rgba(8,12,20,0.8)');
+  bg.setAttribute('stroke', activated ? color : 'rgba(0,212,255,0.2)');
+  bg.setAttribute('stroke-width', activated ? '1' : '0.5');
+  inner.setAttribute('r', activated ? '8' : '5');
+  inner.setAttribute('opacity', activated ? '1' : '0.5');
+  inner.setAttribute('filter', activated ? 'url(#glow-strong)' : 'url(#glow-filter)');
+}
+
+function updateSyncMeter() {
+  if (!currentGame?.puzzle) return;
+  const sharedNodes = currentGame.puzzle.nodes?.filter(n => n.type === 'shared') || [];
+  const activeShared = sharedNodes.filter(n => n.activated).length;
+  const pct = sharedNodes.length > 0 ? (activeShared / sharedNodes.length) * 100 : 0;
+  document.getElementById('sync-fill').style.width = pct + '%';
+  document.getElementById('sync-pct').textContent = pct.toFixed(0) + '%';
+}
+
+// ─── Remote cursors ───────────────────────────────────────────────────────────
+function createRemoteCursor(id, name, color) {
+  const el = document.createElement('div');
+  el.className = 'remote-cursor';
+  el.style.setProperty('--cursor-color', color);
+  el.id = `rcursor-${id}`;
+  el.innerHTML = `
+    <svg width="20" height="20" viewBox="0 0 20 20">
+      <polygon points="2,2 2,16 6,12 9,18 11,17 8,11 14,11" fill="${color}" stroke="white" stroke-width="0.8" opacity="0.9"/>
+    </svg>
+    <div class="remote-cursor-label" style="background:${color}">${name}</div>
+  `;
+  document.body.appendChild(el);
+  return el;
+}
+
+// ─── Ready button ─────────────────────────────────────────────────────────────
+function toggleReady() {
+  isReady = !isReady;
+  document.getElementById('btn-ready').classList.toggle('active', isReady);
+  socket.emit('player:ready');
+}
+
+// ─── Log ──────────────────────────────────────────────────────────────────────
+function log(msg, type = '') {
+  const el = document.getElementById('log');
+  const entry = document.createElement('div');
+  entry.className = `log-entry ${type}`;
+  const time = new Date().toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  entry.textContent = `[${time}] ${msg}`;
+  el.appendChild(entry);
+  el.scrollTop = el.scrollHeight;
+  // Keep max 50 entries
+  while (el.children.length > 50) el.removeChild(el.firstChild);
+}
+
+// ─── Celebration effect ───────────────────────────────────────────────────────
+function fireCelebration() {
+  const arena = document.getElementById('arena');
+  for (let i = 0; i < 30; i++) {
+    setTimeout(() => {
+      const dot = document.createElement('div');
+      dot.style.cssText = `
+        position:absolute;
+        width:6px;height:6px;border-radius:50%;
+        background:${['#00d4ff','#00ff9d','#ffcc00','#ff6b6b'][Math.floor(Math.random()*4)]};
+        left:${20+Math.random()*60}%;top:${20+Math.random()*60}%;
+        pointer-events:none;z-index:100;
+        animation:burst 1s ease-out forwards;
+        box-shadow:0 0 6px currentColor;
+      `;
+      arena.appendChild(dot);
+      setTimeout(() => dot.remove(), 1000);
+    }, i * 50);
+  }
+}
+</style>
+<style>
+@keyframes burst {
+  0% { transform: scale(0) translate(0,0); opacity: 1; }
+  100% { transform: scale(1) translate(${Math.random()>0.5?'+':'-'}${20+Math.random()*40}px, ${Math.random()>0.5?'+':'-'}${20+Math.random()*40}px); opacity: 0; }
+}
+</style>
+</script>
+
+</body>
+</html>
